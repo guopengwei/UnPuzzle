@@ -1,5 +1,5 @@
 """
-Tools to process WSI     Script  ver： Feb 2nd 09:00
+Tools to process WSI     Script  ver： Feb 25th 23:00
 a WSI is a scanned whole slide_feature image of some tissue region and many blank background
 
 Terminology:
@@ -66,28 +66,45 @@ except:
 
 # this is used to process WSI to get slide_feature-level (for OpenSlide) at a target mpp
 def get_nearest_level_for_target_mpp(WSI_image_obj, target_mpp, slide_image_path=None, manual_mpp=None):
-    '''
-    This code is designed to get the nearest level to load the WSI so the image is at target_mpp.
-    WSI_image_obj is from:
-    from monai.data.wsi_reader import WSIReader
-    WSI_image_obj: OpenSlide = WSIReader(backend="OpenSlide").read(WSI_image_path)
-    target_mpp: target mpp for resizing the window of cropped tile
-    manual_mpp: should be None for auto reading mpp from WSI metadata,
+    """
+    This code is designed to get the nearest level to load the WSI efficiently.
+
+    Specifically, WSIs are saved in multiple levels, and have recorded mpp of the level 0 (highest resolution)
+    we read mpp of level0 by using WSI_image_obj.properties.get(openslide.PROPERTY_NAME_MPP_X) or use manual_mpp 
+    to specify.
+    Then, we read the related magnification ratio of the layer with WSI_image_obj.level_downsamples[slide_level]
+    
+    Accordingly, we have the mpp for each level. 
+    Then we find the target level with the nearst mpp to the target mpp. 
+    this target level will be used for effective loading WSI image object.
+    
+    Lastly, we calculate the ROI_size_scale = target_mpp / nearest_mpp
+    
+    :param WSI_image_obj: WSI image object is from
+            from monai.data.wsi_reader import WSIReader
+            WSI_image_obj: OpenSlide = WSIReader(backend="OpenSlide").read(WSI_image_path)
+    
+    :param target_mpp: target mpp for resizing the window of cropped tile
+    :param manual_mpp: should be None for auto reading mpp from WSI metadata,
                 specify this only incase we don't have openslide.PROPERTY_NAME_MPP
 
-    slide_image_path: optional
+    :param slide_image_path: optional
 
-    return: target_loading_level, and the ROI_size_scale
-    The ROI_size_scale is designed for adjusting the ROI_patch_size.
+    returns: 
+    target_level, read WSI object by this level to 
+    ROI_size_scale, which is designed for adjusting the ROI_patch_size.
+
     For example, if the mpp at the nearest level (1.0) is 4 times the target_mpp (0.25),
     then the ROI_size_scale is 0.25 so the cropped ROI should be 1/4 the size of the original cropping size
     and then resize to the original size.
-    '''
+    """
+    # original mpp at level 0
+
     # Try to get the MPP value from the WSI image properties
     mpp_x = manual_mpp or WSI_image_obj.properties.get(openslide.PROPERTY_NAME_MPP_X)
     mpp_y = manual_mpp or WSI_image_obj.properties.get(openslide.PROPERTY_NAME_MPP_Y)
 
-    # Calculate highest resolutoin relative level (assume level 0 resolution = 0.25)
+    # Calculate highest resolution relative level (assume level 0 resolution = 0.25)
     if mpp_x is None or mpp_y is None:
         # fixme temp hack for reading qupath output samples
         qupath_json_path = os.path.join(str(slide_image_path), str(slide_image_path) + '_qpath_seg.json')
@@ -101,12 +118,6 @@ def get_nearest_level_for_target_mpp(WSI_image_obj, target_mpp, slide_image_path
                            "pls use --manual_mpp to specify the mpp for slides")
     else:
         lowest_mpp = float(mpp_x)
-
-    # Adjust lowest_mpp to common resolutions if within a certain range
-    if 0.2 < lowest_mpp < 0.3:  # resolution:0.25um/pixel
-        lowest_mpp = 0.25
-    elif 0.4 < lowest_mpp < 0.6:  # resolution:0.5um/pixel
-        lowest_mpp = 0.5
 
     # Create a dict for all available resolutions and their level
     mpp_level_dict = {}
@@ -384,17 +395,17 @@ def adjust_tile_locations(rel_tile_locations, loaded_WSI_sample, level0_y=None, 
     Adjust the relative tile locations by scaling and translating based on the WSI sample information.
 
     Parameters:
-    - rel_tile_locations: list of tuples, each containing (y, x) coordinates
+    - rel_tile_locations: list of tuples, each containing (y, x) coordinates at target level (not level 0)
     - loaded_WSI_sample: dictionary containing WSI sample information including scale and origin start coordinates
 
     Returns:
-    - tile_locations: numpy array of adjusted tile locations (N, 2) with HW (YX) ordering
+    - tile_locations: numpy array of adjusted tile locations (N, 2) with HW (YX) ordering, (at level 0)
     """
     scale = loaded_WSI_sample["WSI_loc_scale"]
     origin_y = level0_y or loaded_WSI_sample["origin_start_y"]
     origin_x = level0_x or loaded_WSI_sample["origin_start_x"]
 
-    # Adjust and translate tile locations
+    # Adjust and translate tile locations( to obtain the level-0 loc)
     scaled_locations = [(int(y * scale) + origin_y, int(x * scale) + origin_x) for y, x in rel_tile_locations]
 
     # Convert to numpy array and ensure integer type
